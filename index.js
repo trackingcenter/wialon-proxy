@@ -135,3 +135,8 @@ const PORT = process.env.PORT || 8080;
 app.listen(PORT, () =>
   console.log('Proxy Wialon escuchando en puerto ' + PORT)
 );
+if (login.error) {
+  console.log('Respuesta Wialon:', login);   // ← añade
+  return res.status(401).json({ error:'login_failed', login });
+}
+
