@@ -1,39 +1,45 @@
-// index.js  ────────────────────────────────────────────────
+// index.js  – TTC Wialon Proxy (versión 2025-07-03)
+
 const express = require('express');
 const axios   = require('axios');
 const app     = express();
-const WIALON  = 'https://hst-api.wialon.com/wialon/ajax.html';
 
-/* ----------------------------------------------------------
- *  Helper – simplifica llamadas a la API Remote de Wialon
- * --------------------------------------------------------*/
+// URL base del Remote API de Wialon
+const WIALON = 'https://hst-api.wialon.com/wialon/ajax.html';
+
+/* ----------------------------------------------
+ * Helper: hace una llamada GET a Wialon
+ * Siempre stringify(params) y añade timeout.
+ * --------------------------------------------*/
 function wialonRequest({ svc, sid, params }) {
   return axios.get(WIALON, {
     params: {
       svc,
       ...(sid ? { sid } : {}),
-      params: JSON.stringify(params)      // <-- SIEMPRE stringify
+      params: JSON.stringify(params)   // ⇠ Wialon exige JSON en string
     },
-    timeout: 20_000                      // 20 s de seguridad
+    timeout: 20_000                    // 20 s para evitar cuelgues
   }).then(r => r.data);
 }
 
-/* ---------- Ruta de cortesía -------------------------------- */
+/* ───────── Ruta raíz: mensaje de cortesía ───────── */
 app.get('/', (_, res) => {
   res.send(
-    'Wialon proxy activo.<br>Ejemplo: ' +
-    '/groupinfo?token=TOKEN&group_name=MI%20GRUPO'
+    'Wialon proxy activo.<br>' +
+    'Ejemplo: /groupinfo?token=TOKEN&group_name=WS%20G396%20ALFER%20REC%20GOODYEAR'
   );
 });
 
-/* ---------- Endpoint principal ------------------------------ */
+/* ───────── Endpoint principal ───────── */
 app.get('/groupinfo', async (req, res) => {
+
+  /* 0. Validar parámetros */
   const { token, user, password, group_name } = req.query;
   if (!group_name) {
     return res.status(400).json({ error: 'group_name requerido' });
   }
 
-  /* 1. LOGIN */
+  /* 1. LOGIN ------------------------------------------------ */
   let svcLogin, paramsLogin;
   if (token) {
     svcLogin    = 'token/login';
@@ -52,7 +58,7 @@ app.get('/groupinfo', async (req, res) => {
     }
     const sid = login.eid;
 
-    /* 2. BUSCAR GRUPO */
+    /* 2. BUSCAR GRUPO -------------------------------------- */
     const grp = await wialonRequest({
       svc: 'core/search_items',
       sid,
@@ -69,29 +75,36 @@ app.get('/groupinfo', async (req, res) => {
     if (!grp.items?.length) {
       return res.status(404).json({ error: 'grupo_no_encontrado' });
     }
-    const groupId = grp.items[0].id;
 
-    /* 3. LISTAR UNIDADES */
-    const un = await wialonRequest({
-      svc: 'core/search_items',
-      sid,
-      params: {
-        spec: {
-          itemsType: 'avl_unit',
-          propName:  'or_group',
-          propValueMask: String(groupId)
-        },
-        force: 1,
-        flags: 8193,          // datos básicos + última posición
-        from: 0,
-        to:   0
-      }
-    });
+    /* 3. LISTAR UNIDADES ----------------------------------- */
+    let un;
+    const unitIds = grp.items[0].u || [];
 
-    /* 4. FORMAR XML */
-    const esc = s => (s ?? '').toString()
-                    .replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+    if (unitIds.length) {
+      // vía lista de IDs (más confiable que or_group)
+      un = await wialonRequest({
+        svc: 'core/search_item_list',
+        sid,
+        params: { items: unitIds, flags: 8193 }      // 8193 = info + última pos
+      });
+    } else {
+      // fallback: todas las unidades visibles para el token
+      un = await wialonRequest({
+        svc: 'core/search_items',
+        sid,
+        params: {
+          spec: { itemsType: 'avl_unit',
+                  propName: 'sys_name', propValueMask: '*' },
+          force: 1, flags: 8193, from: 0, to: 0
+        }
+      });
+    }
+
+    /* 4. CONSTRUIR XML ------------------------------------- */
+    const esc = s => (s ?? '').toString().replace(/[&<>]/g,
+                 c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;' }[c]));
     const xml = ['<string><NewDataSet>'];
+
     if (token) xml.push(`<Token>${esc(token)}</Token>`);
     if (user)  xml.push(`<User>${esc(user)}</User>`);
     xml.push(`<Sid>${sid}</Sid>`);
@@ -107,6 +120,7 @@ app.get('/groupinfo', async (req, res) => {
         '</Table>'
       );
     });
+
     xml.push('</NewDataSet></string>');
     res.type('xml').send(xml.join(''));
 
@@ -116,8 +130,8 @@ app.get('/groupinfo', async (req, res) => {
   }
 });
 
-/* ---------- Levantar servidor ------------------------------ */
+/* ───────── Iniciar servidor ───────── */
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () =>
-  console.log(`Proxy Wialon escuchando en puerto ${PORT}`)
+  console.log('Proxy Wialon escuchando en puerto ' + PORT)
 );
